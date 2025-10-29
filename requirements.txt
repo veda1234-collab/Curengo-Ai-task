@@ -1,0 +1,7 @@
+numpy
+sounddevice
+soundfile
+whisperx
+groq
+torch
+torchaudio
