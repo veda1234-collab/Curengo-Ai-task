@@ -12,8 +12,7 @@ from pydantic import BaseModel, Field
 # Heavy deps
 import whisperx
 import ollama
-
-
+#
 # -------------------- Config --------------------
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" or "cuda"
