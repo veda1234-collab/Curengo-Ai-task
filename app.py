@@ -11,18 +11,11 @@ from pydantic import BaseModel, Field
 
 # Heavy deps
 import whisperx
-try:
-    from groq import Groq  # optional if provider is openai
-except Exception:  # pragma: no cover
-    Groq = None  # type: ignore
-from openai import OpenAI
+import ollama
 
 
 # -------------------- Config --------------------
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()  # "openai" or "groq"
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")  # e.g., http://localhost:1234/v1 for LM Studio, http://localhost:11434/v1 for Ollama
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" or "cuda"
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
 
@@ -43,8 +36,6 @@ app = FastAPI(
 
 _model_lock = threading.Lock()
 _whisper_model = None
-_groq_client: Optional[Groq] = None
-_openai_client: Optional[OpenAI] = None
 
 
 # -------------------- Pydantic Models --------------------
@@ -277,7 +268,7 @@ def normalize_duration_string(text: str) -> str:
     return text
 
 
-# -------------------- WhisperX and Groq Init --------------------
+# -------------------- WhisperX Init --------------------
 def load_whisper_model():
     global _whisper_model
     with _model_lock:
@@ -285,44 +276,9 @@ def load_whisper_model():
             compute_type = "int8" if DEVICE == "cpu" else "float16"
             _whisper_model = whisperx.load_model(WHISPER_MODEL_NAME, DEVICE, compute_type=compute_type)
     return _whisper_model
-
-
-def get_groq_client() -> Groq:
-    global _groq_client
-    if _groq_client is None:
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise RuntimeError("GROQ_API_KEY is not set in environment")
-        if Groq is None:
-            raise RuntimeError("groq SDK not installed. Install 'groq' package or set LLM_PROVIDER=openai")
-        _groq_client = Groq(api_key=api_key)
-    return _groq_client
-
-
-def get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        # For local OpenAI-compatible servers, allow dummy key
-        if not api_key:
-            if OPENAI_BASE_URL:
-                api_key = "not-needed"
-            else:
-                raise RuntimeError("OPENAI_API_KEY is not set in environment")
-        if OPENAI_BASE_URL:
-            _openai_client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL)
-        else:
-            _openai_client = OpenAI(api_key=api_key)
-    return _openai_client
-
-
 @app.on_event("startup")
 def _startup():
     load_whisper_model()
-    if LLM_PROVIDER == "groq":
-        get_groq_client()
-    else:
-        get_openai_client()
 
 
 # -------------------- ASR --------------------
@@ -382,30 +338,21 @@ LLM_SCHEMA_INSTRUCTION = (
 
 
 def llm_extract(transcript: str) -> Dict[str, Any]:
-    if LLM_PROVIDER == "groq":
-        client = get_groq_client()
-        resp = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": LLM_SCHEMA_INSTRUCTION},
-                {"role": "user", "content": transcript},
-            ],
-            response_format={"type": "json_object"},
-        )
-        content = resp.choices[0].message.content
-        return json.loads(content)
-    # default: openai
-    client = get_openai_client()
-    resp = client.chat.completions.create(
-        model=OPENAI_MODEL,
+    # Local Ollama chat; ensure model is pulled in the host
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": LLM_SCHEMA_INSTRUCTION},
             {"role": "user", "content": transcript},
         ],
-        response_format={"type": "json_object"},
+        options={"num_ctx": 2048},
+        format="json",
     )
-    content = resp.choices[0].message.content
-    return json.loads(content)
+    content = resp.get("message", {}).get("content", "{}")
+    try:
+        return json.loads(content)
+    except Exception:
+        return {}
 
 
 # -------------------- LLM Output Coercion --------------------
